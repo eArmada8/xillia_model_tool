@@ -18,7 +18,7 @@ Double click the python script and it will search for all model files (a matchin
 See the `xillia_tltool_tex2dds.py` section below for instructions on extracting Tales of Xillia assets using tltool.exe.
 
 **Command line arguments:**
-`berseria_export_model.py [-h] [-t] [-d] [-o] dlb_filename dlp_filename`
+`xillia_export_model.py [-h] [-t] [-d] [-o] shpb_file`
 
 `-t, --textformat`
 Output .gltf/.bin format instead of .glb format.
