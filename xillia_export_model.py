@@ -202,12 +202,12 @@ def read_mesh (mesh_info, vt_f, idx_f):
             weights = [x+[round(1-sum(x),6)] if len(x) < 4 else x for x in weights]
         return(weights)
     vt_f.seek(mesh_info['vert_offset'])
-    unk0, count, unk2 = struct.unpack("{}3I".format(e), vt_f.read(12))
     uv_stride = (8 * (mesh_info['flags'] & 0xF) + 4)
     num_uv_maps = mesh_info['flags'] & 0xF
     verts = []
     norms = []
     if mesh_info['flags'] & 0xF0 == 0x50:
+        unk0, count, unk2 = struct.unpack("{}3I".format(e), vt_f.read(12))
         num_vertices_array = []
         blend_idx = []
         weights = []
@@ -235,6 +235,7 @@ def read_mesh (mesh_info, vt_f, idx_f):
                 vt_f.seek(end_offset)
             weights = fix_weights(weights)
     elif mesh_info['flags'] & 0xF0 == 0x70:
+        unk0, count, unk2 = struct.unpack("{}3I".format(e), vt_f.read(12))
         unk_list = list(struct.unpack("<I2H", vt_f.read(8)))
         num_vertices = mesh_info['num_verts']
         vert_offset = vt_f.tell()
@@ -247,7 +248,6 @@ def read_mesh (mesh_info, vt_f, idx_f):
         norms.extend(read_interleaved_floats(vt_f, 3, stride, num_vertices))
         vt_f.seek(end_offset) # More data after this
     elif mesh_info['flags'] & 0xF0 == 0x0:
-        print("FOUND 0x0!")
         num_vertices = mesh_info['num_verts']
         vert_offset = idx_f.seek(mesh_info['uv_offset'])
         norm_offset = vert_offset + 12
