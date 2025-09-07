@@ -611,7 +611,7 @@ def process_shpb (shpb_file, overwrite = False, write_raw_buffers = False, write
             set_endianness({b'MPSM': '<', b'MSPM': '>'}[magic])
             unk_int, = struct.unpack("{}I".format(e), f.read(4))
             toc = [read_offset(f) for _ in range(5)]
-            base_name = shpb_file.split('.TOSHPB')[0]
+            base_name = shpb_file[:-7]
             shps_file = base_name + '.TOSHPS' # vert
             shpp_file = base_name + '.TOSHPP' # uv/idx
             if not os.path.exists(shps_file):
