@@ -74,26 +74,28 @@ def read_skel_file (hrcb_file):
                 f.seek(toc[0])
                 unk0 = struct.unpack("{}16H".format(e), f.read(32))
                 unk1 = struct.unpack("{}f2I2fI2f".format(e), f.read(32))
-                inv_mtx = [struct.unpack("{}16f".format(e), f.read(64)) for _ in range(unk0[0])] # Stored correctly
-                abs_mtx = [struct.unpack("{}16f".format(e), f.read(64)) for _ in range(unk0[0])] # Stored transposed
+                bone_count_0 = unk0[0] # Not sure why this number is larger
+                bone_count_1 = unk0[1] # These seem to be the real bones with matrices and parentage
+                inv_mtx = [struct.unpack("{}16f".format(e), f.read(64)) for _ in range(bone_count_1)] # Stored correctly
+                abs_mtx = [struct.unpack("{}16f".format(e), f.read(64)) for _ in range(bone_count_1)] # Stored transposed
                 abs_mtx_flip = [numpy.array(abs_mtx[i]).reshape(4,4).flatten('F').tolist() for i in range(len(abs_mtx))] # Column major
-                dat2 = [struct.unpack("{}I2HI2HI2HI2H".format(e), f.read(32)) for _ in range(unk0[0])] # all the numbers are the same except ID number
+                dat2 = [struct.unpack("{}I2HI2HI2HI2H".format(e), f.read(32)) for _ in range(bone_count_1)] # all the numbers are the same except ID number
                 dat3 = [struct.unpack("{}I2H".format(e), f.read(8)) for _ in range(unk0[2])] # are these root nodes?
-                dat4 = list(struct.unpack("{}{}I".format(e, unk0[0]), f.read(unk0[0] * 4))) # list of bones, equal to first val of dat2
-                dat5 = [struct.unpack("{}2h".format(e), f.read(4)) for _ in range(unk0[0])] # the second value is -1 unless there is an entry in dat3 - again, root node info?
-                dat6 = [struct.unpack("{}2h3f".format(e), f.read(16)) for _ in range(unk0[0])] # first value is probably parent, second value is 0 if in dat3, 1 if not
+                dat4 = list(struct.unpack("{}{}I".format(e, bone_count_0), f.read(bone_count_0 * 4))) # list of bones, equal to first val of dat2
+                dat5 = [struct.unpack("{}2h".format(e), f.read(4)) for _ in range(bone_count_0)] # the second value is -1 unless there is an entry in dat3 - again, root node info?
+                dat6 = [struct.unpack("{}2h3f".format(e), f.read(16)) for _ in range(bone_count_1)] # first value is probably parent, second value is 0 if in dat3, 1 if not
                 # We need to skip the long list of floats, because I have no idea how to determine the length.  We will search for the first reasonably valid pointer
                 val, = struct.unpack("{}I".format(e), f.read(4))
                 while (val > 0xFFFF or val < 0x1):
                     val, = struct.unpack("{}I".format(e), f.read(4))
                 f.seek(-4,1)
                 names = []
-                for _ in range(unk0[0]):
+                for _ in range(bone_count_1):
                     #3x u32 - start offset, end offset, blank
                     names.append(read_string(f, read_offset(f)))
                     f.seek(8,1) # skip end offset and blank
                 skel_struct = [{'id': dat2[i][0], 'name': names[i], 'abs_matrix': abs_mtx_flip[i],\
-                'inv_matrix': inv_mtx[i], 'parent': dat6[i][0]} for i in range(unk0[0])]
+                'inv_matrix': inv_mtx[i], 'parent': dat6[i][0]} for i in range(bone_count_1)]
                 for i in range(len(skel_struct)):
                     if skel_struct[i]['parent'] in range(len(skel_struct)):
                         abs_mtx = [skel_struct[i]['abs_matrix'][0:4], skel_struct[i]['abs_matrix'][4:8],\
