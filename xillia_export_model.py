@@ -318,6 +318,9 @@ def read_section_3 (f, offset):
     mat_count = counts[0]
     tex_pointer_count = counts[1]
     tex_count = counts[4]
+    unk_header_count = counts[5]
+    for _ in range(unk_header_count):
+        f.seek(8,1)
     set_0 = []
     for i in range(mat_count):
         val1 = list(struct.unpack("{}I8h".format(e), f.read(20)))
@@ -345,6 +348,12 @@ def read_section_3 (f, offset):
         name = read_string(f, offset3)
         set_2.append({'name': name, 'vals': vals})
         f.seek(current)
+    if counts[2] > 0:
+        print("Unreversed material block detected, attempting to skip past...")
+        val, = struct.unpack("{}I".format(e), f.read(4))
+        while (val > 0xFFFF or val < 0x1):
+            val, = struct.unpack("{}I".format(e), f.read(4))
+        f.seek(-4,1)
     textures = []
     for _ in range(tex_count):
         textures.append(read_string(f, read_offset(f)))
