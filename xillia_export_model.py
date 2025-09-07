@@ -92,7 +92,7 @@ def read_skel_file (hrcb_file):
                     #3x u32 - start offset, end offset, blank
                     names.append(read_string(f, read_offset(f)))
                     f.seek(8,1) # skip end offset and blank
-                skel_struct = [{'id': dat4[i], 'name': names[i], 'abs_matrix': abs_mtx_flip[i],\
+                skel_struct = [{'id': dat2[i][0], 'name': names[i], 'abs_matrix': abs_mtx_flip[i],\
                 'inv_matrix': inv_mtx[i], 'parent': dat6[i][0]} for i in range(unk0[0])]
                 for i in range(len(skel_struct)):
                     if skel_struct[i]['parent'] in range(len(skel_struct)):
