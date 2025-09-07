@@ -1,5 +1,5 @@
 # Tales of Xillia (PS3) mesh export
-A script to get the mesh data out of the files from Tales of Xillia (PS3).  The output is in .glb files, although there is an option for .fmt/.ib/.vb/.vgmap that are compatible with DarkStarSword Blender import plugin for 3DMigoto.
+A script to get the mesh data out of the files from Tales of Xillia and Xillia 2 (PS3).  The output is in .glb files, although there is an option for .fmt/.ib/.vb/.vgmap that are compatible with DarkStarSword Blender import plugin for 3DMigoto.
 
 ## Credits:
 I am as always very thankful for the dedicated reverse engineers at the Tales of ABCDE discord and the Kiseki modding discord, for their brilliant work, and for sharing that work so freely.
