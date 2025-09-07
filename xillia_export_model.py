@@ -114,9 +114,17 @@ def find_skeleton (bone_palette_ids):
     if len(hrcb_files) > 10:
         print("This may take a long time...")
     palettes = {}
+    failed_to_read = []
     for i in range(len(hrcb_files)):
-        skel_struct = read_skel_file(hrcb_files[i])
-        palettes[hrcb_files[i]] = [x['id'] for x in skel_struct]
+        try:
+            skel_struct = read_skel_file(hrcb_files[i])
+            palettes[hrcb_files[i]] = [x['id'] for x in skel_struct]
+        except:
+            print("Attempt to read skeleton file {} failed, skipping...".format(hrcb_files[i]))
+            failed_to_read.append(i)
+            pass
+    for i in range(len(failed_to_read), 0, -1):
+        hrcb_files.pop(failed_to_read[i-1])
     matches = [x for x in hrcb_files if all([y in palettes[x] for y in bone_palette_ids])]
     match = ''
     if len(matches) > 1:
