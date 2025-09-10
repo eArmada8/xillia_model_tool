@@ -257,7 +257,7 @@ def read_mesh (mesh_info, vt_f, idx_f):
         vt_f.seek(norm_offset)
         norms.extend(read_interleaved_floats(vt_f, 3, stride, num_vertices))
         vt_f.seek(end_offset) # More data after this
-    elif mesh_info['flags'] & 0xF0 == 0x0:
+    elif mesh_info['flags'] & 0xF0 in [0x0, 0x40]:
         num_vertices = mesh_info['num_verts']
         vert_offset = idx_f.seek(mesh_info['uv_offset'])
         norm_offset = vert_offset + 12
@@ -268,11 +268,11 @@ def read_mesh (mesh_info, vt_f, idx_f):
         norms.extend(read_interleaved_floats(idx_f, 3, stride, num_vertices))
         vt_f.seek(20,1)
     uv_maps = []
-    if not mesh_info['flags'] & 0xF0 == 0x0:
+    if mesh_info['flags'] & 0xF0 in [0x50, 0x70]:
         for i in range(num_uv_maps):
             idx_f.seek(mesh_info['uv_offset'] + 4 + (i * 8))
             uv_maps.append(read_interleaved_floats (idx_f, 2, uv_stride, mesh_info['num_verts']))
-    else:
+    elif mesh_info['flags'] & 0xF0 in [0x0, 0x40]:
         for i in range(num_uv_maps):
             idx_f.seek(mesh_info['uv_offset'] + 28)
             uv_maps.append(read_interleaved_floats (idx_f, 2, stride, mesh_info['num_verts']))
@@ -285,7 +285,7 @@ def read_mesh (mesh_info, vt_f, idx_f):
     if mesh_info['flags'] & 0xF0 == 0x50:
         vb.append({'Buffer': weights})
         vb.append({'Buffer': blend_idx})
-    elif mesh_info['flags'] & 0xF0 in [0x0, 0x70]:
+    elif mesh_info['flags'] & 0xF0 in [0x0, 0x40, 0x70]:
         vb.append({'Buffer': [[1.0, 0.0, 0.0, 0.0] for _ in range(len(verts))]})
         vb.append({'Buffer': [[0, 0, 0, 0] for _ in range(len(verts))]})
     return({'fmt': fmt, 'vb': vb, 'ib': trianglestrip_to_list(idx_buffer)})
