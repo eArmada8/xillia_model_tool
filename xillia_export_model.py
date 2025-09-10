@@ -329,7 +329,7 @@ def read_section_3 (f, offset):
     tex_pointer_count = counts[1]
     unk_count_1 = counts[2]
     unk_count_2 = counts[3]
-    unk_count_3 = unk_count_2 + 1 if (unk_count_2 > 0 and unk_count_2 % 2) else unk_count_2 if unk_count_2 > 0 else 0
+    unk_count_3 = unk_count_2 + 1 if unk_count_2 % 2 else unk_count_2 # Round up to nearest even number
     tex_count = counts[4]
     unk_header_count = counts[5]
     for _ in range(unk_header_count):
