@@ -9,7 +9,7 @@ I am as always very thankful for the dedicated reverse engineers at the Tales of
 2. The numpy module for python is needed.  Install by typing "python3 -m pip install numpy" in the command line / shell.  (The struct, json, glob, copy, subprocess, os, sys, and argparse modules are also required, but these are all already included in most basic python installations.)
 3. The output can be imported into Blender as .glb, or as raw buffers using DarkStarSword's amazing plugin: https://github.com/DarkStarSword/3d-fixes/blob/master/blender_3dmigoto.py (tested on commit [5fd206c](https://raw.githubusercontent.com/DarkStarSword/3d-fixes/5fd206c52fb8c510727d1d3e4caeb95dac807fb2/blender_3dmigoto.py))
 4. xillia_export_model.py is dependent on lib_fmtibvb.py, which must be in the same folder.
-5. [TalesOfTool](https://github.com/DaZombieKiller/TalesOfTools) is required for extracting and renaming files
+5. [Tales Of Tools](https://github.com/DaZombieKiller/TalesOfTools) is required for extracting and renaming files.
 
 ## Usage:
 ### xillia_export_model.py
