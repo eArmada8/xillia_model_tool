@@ -19,6 +19,10 @@ except ModuleNotFoundError as e:
     input("Press Enter to abort.")
     raise
 
+# Configuration variable
+# True to enable combining models (requires a compatible skeleton, no commandline arguments)
+combine_models_into_single_gltf = True
+
 # Global variable, do not edit
 e = '<'
 
@@ -443,7 +447,7 @@ def fix_strides(submesh):
         offset += submesh['vb'][i]['stride']
     return(submesh)
 
-def write_gltf(base_name, skel_struct, vgmap, mesh_blocks_info, meshes, material_struct,\
+def write_gltf(base_name, skel_struct, vgmaps, mesh_blocks_info, meshes, material_struct,\
         overwrite = False, write_binary_gltf = True):
     gltf_data = {}
     gltf_data['asset'] = { 'version': '2.0' }
@@ -491,13 +495,15 @@ def write_gltf(base_name, skel_struct, vgmap, mesh_blocks_info, meshes, material
         g_node = {'children': skel_struct[i]['children'], 'name': skel_struct[i]['name'], 'matrix': skel_struct[i]['matrix']}
         gltf_data['nodes'].append(g_node)
     for i in range(len(gltf_data['nodes'])):
-        if len(gltf_data['nodes'][i]['children']) == 0:
+        if len(gltf_data['nodes'][i]['children']) == 0 and i > 0:
             del(gltf_data['nodes'][i]['children'])
     if len(gltf_data['nodes']) == 0:
         gltf_data['nodes'].append({'children': [], 'name': 'root'})
     # Mesh nodes will be attached to the first node since in the original model, they don't really have a home
     node_id_list = [x['id'] for x in skel_struct]
-    mesh_node_ids = {x['mesh']:x['name'] for x in mesh_blocks_info}
+    for i in range(len(mesh_blocks_info)):
+        mesh_blocks_info[i]['mesh_v'] = '{0}_{1:02d}'.format(mesh_blocks_info[i]['mesh'], mesh_blocks_info[i]['vgmap'])
+    mesh_node_ids = {x['mesh_v']:x['name'] for x in mesh_blocks_info}
     if not 'children' in gltf_data['nodes'][0]:
         gltf_data['nodes'][0]['children'] = []
     for mesh_node_id in mesh_node_ids:
@@ -505,14 +511,19 @@ def write_gltf(base_name, skel_struct, vgmap, mesh_blocks_info, meshes, material
             g_node = {'name': mesh_node_ids[mesh_node_id]}
             gltf_data['nodes'][0]['children'].append(len(gltf_data['nodes']))
             gltf_data['nodes'].append(g_node)
-    mesh_block_tree = {x:[i for i in range(len(mesh_blocks_info)) if mesh_blocks_info[i]['mesh'] == x] for x in mesh_node_ids}
+    mesh_block_tree = {x:[i for i in range(len(mesh_blocks_info)) if mesh_blocks_info[i]['mesh_v'] == x] for x in mesh_node_ids}
     node_list = [x['name'] for x in gltf_data['nodes']]
     # Skin matrices
     skinning_possible = True
     try:
-        vgmap_nodes = [node_list.index(x) for x in list(vgmap.keys())]
-        ibms = [skel_struct[j]['inv_matrix'] for j in vgmap_nodes]
-        inv_mtx_buffer = b''.join([struct.pack("<16f", *x) for x in ibms])
+        ibms_struct = []
+        inv_mtx_buffers = []
+        for vgmap in vgmaps:
+            vgmap_nodes = [node_list.index(x) for x in list(vgmap.keys())]
+            ibms = [skel_struct[j]['inv_matrix'] for j in vgmap_nodes]
+            inv_mtx_buffer = b''.join([struct.pack("<16f", *x) for x in ibms])
+            ibms_struct.append(ibms)
+            inv_mtx_buffers.append(inv_mtx_buffer)
     except ValueError:
         skinning_possible = False
     # Meshes
@@ -580,22 +591,22 @@ def write_gltf(base_name, skel_struct, vgmap, mesh_blocks_info, meshes, material
             if mesh_node_ids[mesh] in node_list: # One of the new nodes
                 node_id = node_list.index(mesh_node_ids[mesh])
             else: # One of the pre-assigned nodes
-                node_id = node_id_list.index(mesh_blocks_info[i]["mesh"])
+                node_id = node_id_list.index(mesh_blocks_info[i]["mesh_v"])
             gltf_data['nodes'][node_id]['mesh'] = len(gltf_data['meshes'])
             gltf_data['meshes'].append({"primitives": primitives, "name": mesh_node_ids[mesh]})
             # Skinning
-            if len(vgmap) > 0 and skinning_possible == True:
+            if len(vgmaps[mesh_blocks_info[i]["vgmap"]]) > 0 and skinning_possible == True:
                 gltf_data['nodes'][node_id]['skin'] = len(gltf_data['skins'])
                 gltf_data['skins'].append({"inverseBindMatrices": len(gltf_data['accessors']),\
-                    "joints": [node_list.index(x) for x in vgmap]})
+                    "joints": [node_list.index(x) for x in vgmaps[mesh_blocks_info[i]["vgmap"]]]})
                 gltf_data['accessors'].append({"bufferView" : len(gltf_data['bufferViews']),\
                     "componentType": 5126,\
-                    "count": len(ibms),\
+                    "count": len(ibms_struct[mesh_blocks_info[i]["vgmap"]]),\
                     "type": "MAT4"})
                 gltf_data['bufferViews'].append({"buffer": 0,\
                     "byteOffset": len(giant_buffer),\
-                    "byteLength": len(inv_mtx_buffer)})
-                giant_buffer += inv_mtx_buffer
+                    "byteLength": len(inv_mtx_buffers[mesh_blocks_info[i]["vgmap"]])})
+                giant_buffer += inv_mtx_buffers[mesh_blocks_info[i]["vgmap"]]
     # Write GLB
     gltf_data['buffers'].append({"byteLength": len(giant_buffer)})
     if (os.path.exists(base_name + '.gltf') or os.path.exists(base_name + '.glb')) and (overwrite == False):
@@ -644,7 +655,10 @@ def process_shpb (shpb_file, overwrite = False, write_raw_buffers = False, write
             if all([y in [x['id'] for x in skel_struct] for y in bone_palette_ids]):
                 skel_index = {skel_struct[i]['id']:i for i in range(len(skel_struct))}
                 vgmap = {skel_struct[skel_index[bone_palette_ids[i]]]['name']:i for i in range(len(bone_palette_ids))}
-            write_gltf(base_name, skel_struct, vgmap, mesh_blocks_info, meshes, material_struct,\
+            for i in range(len(mesh_blocks_info)):
+                mesh_blocks_info[i]['vgmap'] = 0
+            vgmaps = [vgmap]
+            write_gltf(base_name, skel_struct, vgmaps, mesh_blocks_info, meshes, material_struct,\
                 overwrite = overwrite, write_binary_gltf = write_binary_gltf)
             if write_raw_buffers == True:
                 if os.path.exists(base_name) and (os.path.isdir(base_name)) and (overwrite == False):
@@ -669,6 +683,57 @@ def process_shpb (shpb_file, overwrite = False, write_raw_buffers = False, write
                     #write_struct_to_json(skel_struct, base_name + '/skeleton_info')
     return True
 
+def process_shpb_combined (shpb_files, overwrite = False, write_binary_gltf = True):
+    skel_struct, meshes, bone_palettes, vgmaps, mesh_blocks_info, material_struct, = [], [], [], [], [], []
+    for i in range(len(shpb_files)):
+        print("Processing {}...".format(shpb_files[i]))
+        with open(shpb_files[i], 'rb') as f:
+            magic = f.read(4)
+            if magic in [b'MPSM', b'MSPM']:
+                set_endianness({b'MPSM': '<', b'MSPM': '>'}[magic])
+                unk_int, = struct.unpack("{}I".format(e), f.read(4))
+                toc = [read_offset(f) for _ in range(5)]
+                base_name = shpb_files[i][:-7]
+                shps_file = base_name + '.TOSHPS' # vert
+                shpp_file = base_name + '.TOSHPP' # uv/idx
+                if not os.path.exists(shps_file):
+                    input(os.path.basename(shps_file) + " is missing, press Enter to skip processing.")
+                    continue
+                elif not os.path.exists(shpp_file):
+                    input(os.path.basename(shpp_file) + " is missing, press Enter to skip processing.")
+                    continue
+                else:
+                    meshes_i, bone_palette_ids_i, mesh_blocks_info_i = read_section_1 (f, toc[1], shps_file, shpp_file)
+                material_struct_i = read_section_3 (f, toc[3])
+                for i in range(len(mesh_blocks_info_i)):
+                    mesh_blocks_info_i[i]['material'] = mesh_blocks_info_i[i]['material'] + len(material_struct)
+                    mesh_blocks_info_i[i]['vgmap'] = len(bone_palettes)
+                bone_palettes.append(bone_palette_ids_i)
+                meshes.extend(meshes_i)
+                mesh_blocks_info.extend(mesh_blocks_info_i)
+                material_struct.extend(material_struct_i)
+    bone_palette_ids = list(set([x for y in bone_palettes for x in y]))
+    skel_struct = read_skel_file(find_skeleton(bone_palette_ids))
+    for i in range(len(bone_palettes)):
+        vgmap = {'bone_{}'.format(bone_palettes[i][j]):j for j in range(len(bone_palettes[i]))}
+        if all([y in [x['id'] for x in skel_struct] for y in bone_palettes[i]]):
+            skel_index = {skel_struct[j]['id']:j for j in range(len(skel_struct))}
+            vgmap = {skel_struct[skel_index[bone_palettes[i][j]]]['name']:j for j in range(len(bone_palettes[i]))}
+        vgmaps.append(vgmap)
+    common_name = []
+    for i in range(len(os.path.basename(shpb_files[0]))):
+        if all([os.path.basename(x)[:i] == os.path.basename(shpb_files[0])[:i] for x in shpb_files]):
+            common_name = os.path.basename(shpb_files[0])[:i]
+        else:
+            break
+    if len(common_name) > 1:
+        base_name = common_name[:-1] if common_name[-1] == '_' else common_name
+    else:
+        base_name = base_name + '_combined'
+    write_gltf(base_name, skel_struct, vgmaps, mesh_blocks_info, meshes, material_struct,\
+        overwrite = overwrite, write_binary_gltf = write_binary_gltf)
+    return True
+
 if __name__ == "__main__":
     # Set current directory
     if getattr(sys, 'frozen', False):
@@ -689,5 +754,8 @@ if __name__ == "__main__":
                 write_raw_buffers = args.dumprawbuffers, write_binary_gltf = args.textformat)
     else:
         shpb_files = glob.glob('*.TOSHPB')
-        for shpb_file in shpb_files:
-            process_shpb(shpb_file)
+        if combine_models_into_single_gltf == True:
+            process_shpb_combined(shpb_files)
+        else:
+            for shpb_file in shpb_files:
+                process_shpb(shpb_file)

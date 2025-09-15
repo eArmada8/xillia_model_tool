@@ -15,6 +15,8 @@ I am as always very thankful for the dedicated reverse engineers at the Tales of
 ### xillia_export_model.py
 Double click the python script and it will search for all model files (a matching set of .TOSHPB, .TOSHPP, .TOSHPS files) to export them as .glb.  It will search all the available skeleton files (.TOHRCB files) for a skeleton.  This script expects all the necessary files to be available in the same folder; I recommending copying the files and skeleton to their own folder.  Textures should be placed in a `textures` folder.
 
+*Note:* When used without command line arguments, the script will attempt to combine all models into a single .glb - editing the configuration variable `combine_models_into_single_gltf` at the top of the script will revert the script to processing models sequentially and outputting one .glb per model.
+
 See the `xillia_tltool_tex2dds.py` section below for instructions on extracting Tales of Xillia assets using tltool.exe.
 
 **Command line arguments:**
