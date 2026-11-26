@@ -51,7 +51,7 @@ def trianglestrip_to_list(ib_list):
     split_lists = [[]]
     # Split ib_list by primitive restart command, some models have this
     for i in range(len(ib_list)):
-        if not ib_list[i] == -1:
+        if not ib_list[i] == 0xFFFF:
             split_lists[-1].append(ib_list[i])
         else:
             split_lists.append([])
@@ -153,169 +153,273 @@ def find_skeleton (bone_palette_ids):
         print("Using {} as primary skeleton.".format(match))
     return match
 
-def make_fmt(num_uvs, has_weights = True):
+def make_fmt(num_uvs, semantics_present = {'NORMAL': True, 'TANGENT': False, 'BINORMAL': False,
+        'COLOR': False, 'BLENDWEIGHT': True, 'BLENDINDICES': True}):
     fmt = {'stride': '0', 'topology': 'trianglelist', 'format':\
         "DXGI_FORMAT_R16_UINT", 'elements': []}
     element_id, stride = 0, 0
     semantic_index = {'TEXCOORD': 0} # Counters for multiple indicies
     elements = []
-    for i in range(2 + num_uvs + (2 if has_weights else 0)):
+    for i in range(7 + num_uvs):
             # I think order matters in this dict, so we will define the entire structure with default values
             element = {'id': '{0}'.format(element_id), 'SemanticName': '', 'SemanticIndex': '0',\
                 'Format': '', 'InputSlot': '0', 'AlignedByteOffset': str(stride),\
                 'InputSlotClass': 'per-vertex', 'InstanceDataStepRate': '0'}
+            semantic_present = False
             if i == 0:
                 element['SemanticName'] = 'POSITION'
                 element['Format'] = 'R32G32B32_FLOAT'
+                element_id += 1
                 stride += 12
-            elif i == 1:
+                semantic_present = True
+            elif i == 1 and semantics_present['NORMAL']:
                 element['SemanticName'] = 'NORMAL'
                 element['Format'] = 'R32G32B32_FLOAT'
+                element_id += 1
                 stride += 12
-            elif i == 4+num_uvs-2:
-                element['SemanticName'] = 'BLENDWEIGHTS'
+                semantic_present = True
+            elif i == 2 and semantics_present['TANGENT']:
+                element['SemanticName'] = 'TANGENT'
+                element['Format'] = 'R32G32B32_FLOAT'
+                element_id += 1
+                stride += 12
+                semantic_present = True
+            elif i == 3 and semantics_present['BINORMAL']:
+                element['SemanticName'] = 'BINORMAL'
+                element['Format'] = 'R32G32B32_FLOAT'
+                element_id += 1
+                stride += 12
+                semantic_present = True
+            elif i == 4 and semantics_present['COLOR']:
+                element['SemanticName'] = 'COLOR'
+                element['Format'] = 'R8G8B8A8_UNORM'
+                element_id += 1
+                stride += 4
+                semantic_present = True
+            elif i == 7+num_uvs-2 and semantics_present['BLENDWEIGHT']:
+                element['SemanticName'] = 'BLENDWEIGHT'
                 element['Format'] = 'R32G32B32A32_FLOAT'
+                element_id += 1
                 stride += 16
-            elif i == 4+num_uvs-1:
+                semantic_present = True
+            elif i == 7+num_uvs-1 and semantics_present['BLENDINDICES']:
                 element['SemanticName'] = 'BLENDINDICES'
                 element['Format'] = 'R8G8B8A8_UINT'
+                element_id += 1
                 stride += 4
-            else:
+                semantic_present = True
+            elif i > 4 and i < (5 + num_uvs):
                 element['SemanticName'] = 'TEXCOORD'
                 element['SemanticIndex'] = str(semantic_index['TEXCOORD'])
                 element['Format'] = 'R32G32_FLOAT'
                 semantic_index['TEXCOORD'] += 1
+                element_id += 1
                 stride += 8
-            element_id += 1
-            elements.append(element)
+                semantic_present = True
+            if semantic_present == True:
+                elements.append(element)
     fmt['stride'] = str(stride)
     fmt['elements'] = elements
     return(fmt)
 
 def read_mesh (mesh_info, vt_f, idx_f):
     def read_floats (f, num):
-        return(list(struct.unpack("{0}{1}f".format(e, num), f.read(num * 4))))
+        return(list(struct.unpack("{}{}f".format(e, num), f.read(num * 4))))
     def read_bytes (f, num):
-        return(list(struct.unpack("{0}{1}B".format(e, num), f.read(num))))
+        return(list(struct.unpack("{}{}B".format(e, num), f.read(num))))
     def read_interleaved_floats (f, num, stride, total):
         vecs = []
         padding = stride - (num * 4)
         for i in range(total):
             vecs.append(read_floats(f, num))
-            f.seek(padding, 1)
+            if i < (total - 1):
+                f.seek(padding, 1)
         return(vecs)
     def read_interleaved_bytes (f, num, stride, total):
         vecs = []
         padding = stride - (num)
         for i in range(total):
             vecs.append(read_bytes(f, num))
-            f.seek(padding, 1)
+            if i < (total - 1):
+                f.seek(padding, 1)
         return(vecs)
+    def read_interleaved_ufloats (f, num, stride, total): # Unsigned normalized byte floats
+        vecs = []
+        padding = stride - (num)
+        float_max = ((2**8)-1)
+        for i in range(total):
+            vals = read_bytes(f, num)
+            vecs.append([x / float_max for x in vals])
+            if i < (total - 1):
+                f.seek(padding, 1)
+        return(vecs)
+    def read_vert_vector_data (f, flags, stride, num_verts, nrm_offset = 0, tangent_offset = 0, binormal_offset = 0):
+        positions, normals, tangents, binormals = [], [], [], []
+        base_start = f.tell()
+        positions = read_interleaved_floats(f, 3, stride, num_verts)
+        if not flags & 0x2000:
+            f.seek(base_start + nrm_offset)
+            normals = read_interleaved_floats(f, 3, stride, num_verts)
+            if flags & 0x80:
+                f.seek(base_start + tangent_offset)
+                tangents = read_interleaved_floats(f, 3, stride, num_verts)
+                f.seek(base_start + binormal_offset)
+                binormals = read_interleaved_floats(f, 3, stride, num_verts)
+        return positions, normals, tangents, binormals
     def fix_weights (weights):
         for _ in range(3):
             weights = [x+[round(1-sum(x),6)] if len(x) < 4 else x for x in weights]
         return(weights)
-    vt_f.seek(mesh_info['vert_offset'])
-    uv_stride = (8 * (mesh_info['flags'] & 0xF) + 4)
-    num_uv_maps = mesh_info['flags'] & 0xF
-    verts = []
-    norms = []
-    if mesh_info['flags'] & 0xF0 == 0x50:
+    vt_start_offset = mesh_info['vert_offset']
+    num_verts = mesh_info['num_verts']
+    idx_start_offset = mesh_info['idx_offset']
+    num_idx = mesh_info['num_idx']
+    offset_gpu_verts = mesh_info['uv_offset']
+    flags = mesh_info['flags']
+    # Calculate strides from flags
+    semantics_present = {'NORMAL': False, 'TANGENT': False, 'BINORMAL': False,
+            'COLOR': True, 'BLENDWEIGHT': False, 'BLENDINDICES': False} # Only color is always present
+    cpu_stride_no_wt, gpu_stride = 0, 0 # final stride = cpu_stride_no_wt + weights, which are variable
+    pos_offset, nrm_offset, tangent_offset, binormal_offset, blend_idx_offset, blend_wt_offset = 0, 0, 0, 0, 0, 0
+    if flags & 0x30: # CPU skinning, vertex vector data in TOMDLB_D
+        cpu_stride_no_wt += 12
+        if not flags & 0x2000: # Unclear if this flag is actually used
+            semantics_present['NORMAL'] = True
+            nrm_offset = cpu_stride_no_wt
+            cpu_stride_no_wt += 12
+            if flags & 0x80:
+                semantics_present['TANGENT'] = True
+                semantics_present['BINORMAL'] = True
+                tangent_offset = cpu_stride_no_wt
+                cpu_stride_no_wt += 12
+                binormal_offset = cpu_stride_no_wt
+                cpu_stride_no_wt += 12
+        elif flags & 0x20:
+            nrm_offset = cpu_stride_no_wt
+            cpu_stride_no_wt += 12 # If flags & 0x20, the normal slot is always there, even if unused
+        if not (flags & 0x20):
+            blend_idx_offset = cpu_stride_no_wt
+            cpu_stride_no_wt += 4 # Blend indices
+            blend_wt_offset = cpu_stride_no_wt
+        if flags & 0x10:
+            semantics_present['BLENDWEIGHT'] = True
+            semantics_present['BLENDINDICES'] = True
+    else: # No skinning, vertex vector data in TOMDLP_P (sent directly to GPU)
+        gpu_stride += 12
+        if not flags & 0x2000:
+            semantics_present['NORMAL'] = True
+            nrm_offset = gpu_stride
+            gpu_stride += 12
+            if flags & 0x80:
+                semantics_present['TANGENT'] = True
+                semantics_present['BINORMAL'] = True
+                tangent_offset = gpu_stride
+                gpu_stride += 12
+                binormal_offset = gpu_stride
+                gpu_stride += 12
+    color_offset = gpu_stride
+    gpu_stride += 4 # Vertex color
+    uv_offsets = []
+    num_uv_maps = flags & 0xF
+    for _ in range(num_uv_maps):
+        uv_offsets.append(gpu_stride)
+        gpu_stride += 8 # UVs
+    # Read vertex data
+    positions, normals, tangents, binormals, blend_idx, weights, morphs = [], [], [], [], [], [], []
+    vt_f.seek(vt_start_offset)
+    if flags & 0x30:
         unk0, count, unk2 = struct.unpack("{}3I".format(e), vt_f.read(12))
-        num_vertices_array = []
-        blend_idx = []
-        weights = []
-        for i in range(count):
-            num_vertices_array.append(list(struct.unpack("{}4H".format(e), vt_f.read(8))))
-        for i in range(count):
-            for j in range(len(num_vertices_array[i])):
-                vert_offset = vt_f.tell()
-                norm_offset = vert_offset + 12
-                blend_idx_offset = norm_offset + 12
-                weights_offset = blend_idx_offset + 4
-                stride = 28 + (j * 4)
-                end_offset = vt_f.tell() + (num_vertices_array[i][j] * stride)
-                vt_f.seek(vert_offset)
-                verts.extend(read_interleaved_floats(vt_f, 3, stride, num_vertices_array[i][j]))
-                vt_f.seek(norm_offset)
-                norms.extend(read_interleaved_floats(vt_f, 3, stride, num_vertices_array[i][j]))
-                vt_f.seek(blend_idx_offset)
-                blend_idx.extend(read_interleaved_bytes(vt_f, 4, stride, num_vertices_array[i][j]))
-                if j > 0:
-                    vt_f.seek(weights_offset)
-                    weights.extend(read_interleaved_floats(vt_f, j, stride, num_vertices_array[i][j]))
-                else:
-                    weights.extend([[1.0] for _ in range(num_vertices_array[i][j])])
-                vt_f.seek(end_offset)
+        if flags & 0x20: # Morph target animation
+            bone_slot, unk3, unk4, unk5 = list(struct.unpack("{}4H".format(e), vt_f.read(8)))
+            base_offset = vt_f.tell()
+            positions, normals, tangents, binormals = read_vert_vector_data (vt_f, flags, cpu_stride_no_wt, num_verts,
+                nrm_offset, tangent_offset, binormal_offset)
+            if flags & 0x10: # Skinned morph targets
+                blend_idx = [[bone_slot, 0, 0, 0] for _ in range(num_verts)]
+                weights = [[1.0, 0.0, 0.0, 0.0] for _ in range(num_verts)]
+        else: # Skeletal animation
+            weights = []
+            num_vertices_array = []
+            for i in range(count):
+                num_vertices_array.append(list(struct.unpack("{}4H".format(e), vt_f.read(8))))
+            for i in range(len(num_vertices_array)):
+                for j in range(len(num_vertices_array[i])):
+                    if num_vertices_array[i][j] > 0:
+                        base_start = vt_f.tell()
+                        stride = cpu_stride_no_wt + (j * 4)
+                        new_p, new_n, new_t, new_b = read_vert_vector_data (vt_f, flags, stride,
+                            num_vertices_array[i][j], nrm_offset, tangent_offset, binormal_offset)
+                        positions.extend(new_p)
+                        normals.extend(new_n)
+                        tangents.extend(new_t)
+                        binormals.extend(new_b)
+                        vt_f.seek(base_start + blend_idx_offset)
+                        blend_idx.extend(read_interleaved_bytes(vt_f, 4, stride, num_vertices_array[i][j]))
+                        if j > 0:
+                            vt_f.seek(base_start + blend_wt_offset)
+                            weights.extend(read_interleaved_floats(vt_f, j, stride, num_vertices_array[i][j]))
+                        else:
+                            weights.extend([[1.0] for _ in range(num_vertices_array[i][j])])
             weights = fix_weights(weights)
-    elif mesh_info['flags'] & 0xF0 == 0x70:
-        unk0, count, unk2 = struct.unpack("{}3I".format(e), vt_f.read(12))
-        unk_list = list(struct.unpack("<I2H", vt_f.read(8)))
-        num_vertices = mesh_info['num_verts']
-        vert_offset = vt_f.tell()
-        norm_offset = vert_offset + 12
-        stride = 24
-        end_offset = vt_f.tell() + (num_vertices * stride)
-        vt_f.seek(vert_offset)
-        verts.extend(read_interleaved_floats(vt_f, 3, stride, num_vertices))
-        vt_f.seek(norm_offset)
-        norms.extend(read_interleaved_floats(vt_f, 3, stride, num_vertices))
-        vt_f.seek(end_offset) # More data after this
-    elif mesh_info['flags'] & 0xF0 in [0x0, 0x40]:
-        num_vertices = mesh_info['num_verts']
-        vert_offset = idx_f.seek(mesh_info['uv_offset'])
-        norm_offset = vert_offset + 12
-        stride = 28 + ((mesh_info['flags'] & 0xF) * 8) # 12 + 12 + 4 extra for UV padding
-        idx_f.seek(vert_offset)
-        verts.extend(read_interleaved_floats(idx_f, 3, stride, num_vertices))
-        idx_f.seek(norm_offset)
-        norms.extend(read_interleaved_floats(idx_f, 3, stride, num_vertices))
-        vt_f.seek(20,1)
+    else:
+        idx_f.seek(offset_gpu_verts)
+        positions, normals, tangents, binormals = read_vert_vector_data (idx_f, flags, gpu_stride, num_verts,
+            nrm_offset, tangent_offset, binormal_offset)
+    idx_f.seek(offset_gpu_verts + color_offset)
+    colors = read_interleaved_ufloats(idx_f, 4, gpu_stride, num_verts)
     uv_maps = []
-    if mesh_info['flags'] & 0xF0 in [0x50, 0x70]:
-        for i in range(num_uv_maps):
-            idx_f.seek(mesh_info['uv_offset'] + 4 + (i * 8))
-            uv_maps.append(read_interleaved_floats (idx_f, 2, uv_stride, mesh_info['num_verts']))
-    elif mesh_info['flags'] & 0xF0 in [0x0, 0x40]:
-        for i in range(num_uv_maps):
-            idx_f.seek(mesh_info['uv_offset'] + 28)
-            uv_maps.append(read_interleaved_floats (idx_f, 2, stride, mesh_info['num_verts']))
-    idx_f.seek(mesh_info['idx_offset'])
-    idx_buffer = list(struct.unpack("{0}{1}h".format(e, mesh_info['num_idx']), idx_f.read(mesh_info['num_idx'] * 2)))
-    fmt = make_fmt(len(uv_maps), True)
-    vb = [{'Buffer': verts}, {'Buffer': norms}]
+    for i in range(len(uv_offsets)):
+        idx_f.seek(offset_gpu_verts + uv_offsets[i])
+        uv_maps.append(read_interleaved_floats (idx_f, 2, gpu_stride, num_verts))
+    # Read index data
+    idx_f.seek(idx_start_offset)
+    idx_buffer = list(struct.unpack("{}{}H".format(e, num_idx), idx_f.read(num_idx * 2)))
+    if not (flags & 0xF00 == 0x100):
+        ib = trianglestrip_to_list(idx_buffer)
+    else:
+        ib = idx_buffer
+    # Build raw buffers for export
+    fmt = make_fmt(len(uv_maps), semantics_present)
+    vb = [{'Buffer': positions}]
+    if not flags & 0x2000:
+        vb.append({'Buffer': normals})
+    if flags & 0x80:
+        vb.append({'Buffer': tangents})
+        vb.append({'Buffer': binormals})
+    vb.append({'Buffer': colors})
     for uv_map in uv_maps:
         vb.append({'Buffer': uv_map})
-    if mesh_info['flags'] & 0xF0 == 0x50:
+    if flags & 0x10:
         vb.append({'Buffer': weights})
         vb.append({'Buffer': blend_idx})
-    elif mesh_info['flags'] & 0xF0 in [0x0, 0x40, 0x70]:
-        vb.append({'Buffer': [[1.0, 0.0, 0.0, 0.0] for _ in range(len(verts))]})
-        vb.append({'Buffer': [[0, 0, 0, 0] for _ in range(len(verts))]})
-    return({'fmt': fmt, 'vb': vb, 'ib': trianglestrip_to_list(idx_buffer)})
+    mesh = {'fmt': fmt, 'vb': vb, 'ib': ib, 'morphs': morphs}
+    if flags & 0x80:
+        expected_binormals = numpy.cross(normals, tangents)
+        w = numpy.where(numpy.einsum('ij,ij->i', expected_binormals, binormals) >= 0.0, 1.0, -1.0)
+        mesh['tangent4'] = [tangents[i] + [float(w[i])] for i in range(len(tangents))]
+    return(mesh)
 
-#Meshes, offset should be toc[1].  Requires shps filename for verts, and shpp filename for uv's and index buffer.
+#Meshes, offset should be toc[0].  Requires shps filename for verts, and shpp filename for uv's and index buffer.
 def read_section_1 (f, offset, shps_file, shpp_file):
     f.seek(offset)
     mesh_count, palette_count = struct.unpack("{}2H".format(e), f.read(4))
-    set_0 = [struct.unpack("{}4f".format(e), f.read(16)) for _ in range(mesh_count)]
+    set_0 = [struct.unpack("{}I3f".format(e), f.read(16)) for _ in range(mesh_count)]
     set_1 = []
     names = []
     for _ in range(mesh_count):
-        set_1.append(struct.unpack("{}6H".format(e), f.read(12)))
+        set_1.append(struct.unpack("{}I4H".format(e), f.read(12)))
         names.append(read_string(f, read_offset (f)))
     mesh_blocks_info = []
     for i in range(mesh_count):
         mesh_info = {'name': names[i]}
         mesh_info['num_verts'], mesh_info['num_idx'], mesh_info['uv_offset'], mesh_info['idx_offset'], mesh_info['vert_offset'] = \
             struct.unpack("{}2H3I".format(e), f.read(16))
-        mesh_info['unk0'] = set_1[i][0]
-        mesh_info['mesh'] = set_1[i][1]
-        mesh_info['submesh'] = set_1[i][2]
-        mesh_info['flags'] = set_1[i][3]
-        mesh_info['material'] = set_1[i][4]
-        mesh_info['unk1'] = set_1[i][5]
-        mesh_info['unk_floats'] = set_0[i]
+        mesh_info['mesh'] = set_1[i][0]
+        mesh_info['submesh'] = set_1[i][1]
+        mesh_info['flags'] = set_1[i][2]
+        mesh_info['material'] = set_1[i][3]
+        mesh_info['material_flags'] = set_1[i][4]
+        mesh_info['mesh_sort'] = set_0[i]
         mesh_blocks_info.append(mesh_info)
     bone_palette_ids = struct.unpack("{}{}I".format(e, palette_count), f.read(4 * palette_count))
     meshes = []
@@ -325,7 +429,7 @@ def read_section_1 (f, offset, shps_file, shpp_file):
                 meshes.append(read_mesh(mesh_blocks_info[i], vt_f, idx_f))
     return(meshes, bone_palette_ids, mesh_blocks_info)
 
-#Materials, offset should be toc[1]. 
+#Materials, offset should be toc[2]. 
 def read_section_3 (f, offset):
     f.seek(offset)
     counts = struct.unpack("{}8H".format(e), f.read(16))
@@ -416,7 +520,7 @@ def convert_format_for_gltf(dxgi_format):
 def convert_fmt_for_gltf(fmt):
     new_fmt = copy.deepcopy(fmt)
     stride = 0
-    new_semantics = {'BLENDWEIGHTS': 'WEIGHTS', 'BLENDINDICES': 'JOINTS'}
+    new_semantics = {'BLENDWEIGHT': 'WEIGHTS', 'BLENDINDICES': 'JOINTS'}
     need_index = ['WEIGHTS', 'JOINTS', 'COLOR', 'TEXCOORD']
     for i in range(len(fmt['elements'])):
         if new_fmt['elements'][i]['SemanticName'] in new_semantics.keys():
@@ -442,9 +546,13 @@ def convert_fmt_for_gltf(fmt):
 def fix_strides(submesh):
     offset = 0
     for i in range(len(submesh['vb'])):
-        submesh['vb'][i]['fmt']['AlignedByteOffset'] = str(offset)
-        submesh['vb'][i]['stride'] = get_stride_from_dxgi_format(submesh['vb'][i]['fmt']['Format'])
-        offset += submesh['vb'][i]['stride']
+        submesh['fmt']['elements'][i]['AlignedByteOffset'] = str(offset)
+        new_stride = get_stride_from_dxgi_format(submesh['fmt']['elements'][i]['Format'])
+        offset += new_stride
+    if 'vb0 stride' in submesh['fmt']:
+        submesh['fmt']['vb0 stride'] = str(offset)
+    else:
+        submesh['fmt']['stride'] = str(offset)
     return(submesh)
 
 def write_gltf(base_name, skel_struct, vgmaps, mesh_blocks_info, meshes, material_struct,\
@@ -459,7 +567,6 @@ def write_gltf(base_name, skel_struct, vgmaps, mesh_blocks_info, meshes, materia
     gltf_data['nodes'] = []
     gltf_data['samplers'] = []
     gltf_data['scenes'] = [{}]
-    gltf_data['scenes'][0]['nodes'] = [0]
     gltf_data['scene'] = 0
     gltf_data['skins'] = []
     gltf_data['textures'] = []
@@ -527,18 +634,24 @@ def write_gltf(base_name, skel_struct, vgmaps, mesh_blocks_info, meshes, materia
     except ValueError:
         skinning_possible = False
     # Meshes
-    mesh_names = [] # Xillia doesn't have a 
     for mesh in mesh_block_tree: #Mesh
         primitives = []
         for j in range(len(mesh_block_tree[mesh])): #Submesh
             i = mesh_block_tree[mesh][j]
             # Vertex Buffer
+            for k, element in enumerate(meshes[i]['fmt']['elements']): #Expand tangent to vec4
+                if element['SemanticName'] == 'TANGENT' and 'tangent4' in meshes[i]:
+                    meshes[i]['vb'][k]['Buffer'] = meshes[i]['tangent4']
+                    element['Format'] = 'R32G32B32A32_FLOAT'
+            meshes[i] = fix_strides(meshes[i])
             gltf_fmt = convert_fmt_for_gltf(meshes[i]['fmt'])
             vb_stream = io.BytesIO()
             write_vb_stream(meshes[i]['vb'], vb_stream, gltf_fmt, e='<', interleave = False)
             block_offset = len(giant_buffer)
             primitive = {"attributes":{}}
             for element in range(len(gltf_fmt['elements'])):
+                if gltf_fmt['elements'][element]['SemanticName'] == 'BINORMAL':
+                    gltf_fmt['elements'][element]['SemanticName'] = '_BINORMAL'
                 primitive["attributes"][gltf_fmt['elements'][element]['SemanticName']]\
                     = len(gltf_data['accessors'])
                 gltf_data['accessors'].append({"bufferView" : len(gltf_data['bufferViews']),\
@@ -595,7 +708,8 @@ def write_gltf(base_name, skel_struct, vgmaps, mesh_blocks_info, meshes, materia
             gltf_data['nodes'][node_id]['mesh'] = len(gltf_data['meshes'])
             gltf_data['meshes'].append({"primitives": primitives, "name": mesh_node_ids[mesh]})
             # Skinning
-            if len(vgmaps[mesh_blocks_info[i]["vgmap"]]) > 0 and skinning_possible == True:
+            if (len(vgmaps[mesh_blocks_info[i]["vgmap"]]) > 0 and skinning_possible == True
+                    and all(['JOINTS_0' in p['attributes'] for p in primitives])):
                 gltf_data['nodes'][node_id]['skin'] = len(gltf_data['skins'])
                 gltf_data['skins'].append({"inverseBindMatrices": len(gltf_data['accessors']),\
                     "joints": [node_list.index(x) for x in vgmaps[mesh_blocks_info[i]["vgmap"]]]})
@@ -607,6 +721,9 @@ def write_gltf(base_name, skel_struct, vgmaps, mesh_blocks_info, meshes, materia
                     "byteOffset": len(giant_buffer),\
                     "byteLength": len(inv_mtx_buffers[mesh_blocks_info[i]["vgmap"]])})
                 giant_buffer += inv_mtx_buffers[mesh_blocks_info[i]["vgmap"]]
+    # Attach the root node (and any orphan nodes if the external skeleton is not available) to the scene
+    child_nodes = set([x for y in gltf_data['nodes'] for x in y.get('children', [])])
+    gltf_data['scenes'][0]['nodes'] = sorted([i for i in range(len(gltf_data['nodes'])) if i not in child_nodes])
     # Write GLB
     gltf_data['buffers'].append({"byteLength": len(giant_buffer)})
     if (os.path.exists(base_name + '.gltf') or os.path.exists(base_name + '.glb')) and (overwrite == False):
@@ -635,8 +752,8 @@ def process_shpb (shpb_file, overwrite = False, write_raw_buffers = False, write
         magic = f.read(4)
         if magic in [b'MPSM', b'MSPM']:
             set_endianness({b'MPSM': '<', b'MSPM': '>'}[magic])
-            unk_int, = struct.unpack("{}I".format(e), f.read(4))
-            toc = [read_offset(f) for _ in range(5)]
+            file_size, version = struct.unpack("{}2I".format(e), f.read(8))
+            toc = [read_offset(f) for _ in range(7)]
             base_name = shpb_file[:-7]
             shps_file = base_name + '.TOSHPS' # vert
             shpp_file = base_name + '.TOSHPP' # uv/idx
@@ -647,8 +764,8 @@ def process_shpb (shpb_file, overwrite = False, write_raw_buffers = False, write
                 input(os.path.basename(shpp_file) + " is missing, press Enter to skip processing.")
                 return False
             else:
-                meshes, bone_palette_ids, mesh_blocks_info = read_section_1 (f, toc[1], shps_file, shpp_file)
-            material_struct = read_section_3 (f, toc[3])
+                meshes, bone_palette_ids, mesh_blocks_info = read_section_1 (f, toc[0], shps_file, shpp_file)
+            material_struct = read_section_3 (f, toc[2])
             # Find and incorporate an external skeleton
             skel_struct = read_skel_file(find_skeleton(bone_palette_ids))
             vgmap = {'bone_{}'.format(bone_palette_ids[i]):i for i in range(len(bone_palette_ids))}
@@ -691,8 +808,8 @@ def process_shpb_combined (shpb_files, overwrite = False, write_binary_gltf = Tr
             magic = f.read(4)
             if magic in [b'MPSM', b'MSPM']:
                 set_endianness({b'MPSM': '<', b'MSPM': '>'}[magic])
-                unk_int, = struct.unpack("{}I".format(e), f.read(4))
-                toc = [read_offset(f) for _ in range(5)]
+                file_size, version = struct.unpack("{}2I".format(e), f.read(8))
+                toc = [read_offset(f) for _ in range(7)]
                 base_name = shpb_files[i][:-7]
                 shps_file = base_name + '.TOSHPS' # vert
                 shpp_file = base_name + '.TOSHPP' # uv/idx
@@ -703,8 +820,8 @@ def process_shpb_combined (shpb_files, overwrite = False, write_binary_gltf = Tr
                     input(os.path.basename(shpp_file) + " is missing, press Enter to skip processing.")
                     continue
                 else:
-                    meshes_i, bone_palette_ids_i, mesh_blocks_info_i = read_section_1 (f, toc[1], shps_file, shpp_file)
-                material_struct_i = read_section_3 (f, toc[3])
+                    meshes_i, bone_palette_ids_i, mesh_blocks_info_i = read_section_1 (f, toc[0], shps_file, shpp_file)
+                material_struct_i = read_section_3 (f, toc[2])
                 for i in range(len(mesh_blocks_info_i)):
                     mesh_blocks_info_i[i]['material'] = mesh_blocks_info_i[i]['material'] + len(material_struct)
                     mesh_blocks_info_i[i]['vgmap'] = len(bone_palettes)

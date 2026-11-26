@@ -4,6 +4,10 @@ A script to get the mesh data out of the files from Tales of Xillia and Xillia 2
 ## Credits:
 I am as always very thankful for the dedicated reverse engineers at the Tales of ABCDE discord and the Kiseki modding discord, for their brilliant work, and for sharing that work so freely.  Also thank you to V for extensive testing / bug hunting!
 
+## AI Disclosure
+
+I did not use AI for this tool, but some of the code includes backported fixes from Berseria.  I used AI (Claude, attached to ghidra) as a debugger / decompiler to help me debug persistent errors in my Berseria tool, and I wrote the code to fix those errors.
+
 ## Requirements:
 1. Python 3.10 and newer is required for use of these scripts.  It is free from the Microsoft Store, for Windows users.  For Linux users, please consult your distro.
 2. The numpy module for python is needed.  Install by typing "python3 -m pip install numpy" in the command line / shell.  (The struct, json, glob, copy, subprocess, os, sys, and argparse modules are also required, but these are all already included in most basic python installations.)
