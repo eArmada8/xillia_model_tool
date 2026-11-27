@@ -12,7 +12,7 @@
 # GitHub eArmada8/xillia_model_tool
 
 try:
-    import struct, json, numpy, copy, glob, os, sys
+    import struct, json, numpy, copy, io, glob, os, sys
     from lib_fmtibvb import *
 except ModuleNotFoundError as e:
     print("Python module missing! {}".format(e.msg))
@@ -222,7 +222,7 @@ def make_fmt(num_uvs, semantics_present = {'NORMAL': True, 'TANGENT': False, 'BI
     fmt['elements'] = elements
     return(fmt)
 
-def read_mesh (mesh_info, vt_f, idx_f):
+def read_mesh (mesh_info, vt_f, idx_f, morph_target_data = []):
     def read_floats (f, num):
         return(list(struct.unpack("{}{}f".format(e, num), f.read(num * 4))))
     def read_bytes (f, num):
@@ -325,18 +325,26 @@ def read_mesh (mesh_info, vt_f, idx_f):
         uv_offsets.append(gpu_stride)
         gpu_stride += 8 # UVs
     # Read vertex data
-    positions, normals, tangents, binormals, blend_idx, weights = [], [], [], [], [], []
+    positions, normals, tangents, binormals, blend_idx, weights, morphs = [], [], [], [], [], [], []
     vt_f.seek(vt_start_offset)
     if flags & 0x30:
-        unk0, count, unk2 = struct.unpack("{}3I".format(e), vt_f.read(12))
+        first_morph, total_morph, count, unk2 = struct.unpack("{}2H2I".format(e), vt_f.read(12))
         if flags & 0x20: # Morph target animation
-            bone_slot, unk3, unk4, unk5 = list(struct.unpack("{}4H".format(e), vt_f.read(8)))
+            bone_slot, unk3, vert_count_1, vert_count_2 = list(struct.unpack("{}4H".format(e), vt_f.read(8)))
             base_offset = vt_f.tell()
             positions, normals, tangents, binormals = read_vert_vector_data (vt_f, flags, cpu_stride_no_wt, num_verts,
                 nrm_offset, tangent_offset, binormal_offset)
             if flags & 0x10: # Skinned morph targets
                 blend_idx = [[bone_slot, 0, 0, 0] for _ in range(num_verts)]
                 weights = [[1.0, 0.0, 0.0, 0.0] for _ in range(num_verts)]
+            for i in range(total_morph):
+                dense_morph_block = morph_target_data[first_morph + i]['morph_run_binary']
+                dense_morph_block.extend(b'\x00' * vert_count_2 * cpu_stride_no_wt)
+                with io.BytesIO(dense_morph_block) as dense_morph_block_f:
+                    morph_p, morph_n, morph_t, morph_b = read_vert_vector_data (dense_morph_block_f, flags,
+                        cpu_stride_no_wt,num_verts, nrm_offset, tangent_offset, binormal_offset)
+                morphs.append({'POSITION': morph_p, 'NORMAL': morph_n, 'TANGENT': morph_t, 'BINORMAL': morph_b,
+                    'name': morph_target_data[first_morph + i]['name']})
         else: # Skeletal animation
             weights = []
             num_vertices_array = []
@@ -392,7 +400,7 @@ def read_mesh (mesh_info, vt_f, idx_f):
     if flags & 0x10:
         vb.append({'Buffer': weights})
         vb.append({'Buffer': blend_idx})
-    mesh = {'fmt': fmt, 'vb': vb, 'ib': ib, 'mesh_info': mesh_info}
+    mesh = {'fmt': fmt, 'vb': vb, 'ib': ib, 'morphs': morphs, 'mesh_info': mesh_info}
     if flags & 0x80:
         expected_binormals = numpy.cross(normals, tangents)
         w = numpy.where(numpy.einsum('ij,ij->i', expected_binormals, binormals) >= 0.0, 1.0, -1.0)
@@ -400,7 +408,7 @@ def read_mesh (mesh_info, vt_f, idx_f):
     return(mesh)
 
 #Meshes, offset should be toc[0].  Requires shps filename for verts, and shpp filename for uv's and index buffer.
-def read_section_1 (f, offset, shps_file, shpp_file):
+def read_section_1 (f, offset, shps_file, shpp_file, morph_target_data = []):
     f.seek(offset)
     mesh_count, palette_count = struct.unpack("{}2H".format(e), f.read(4))
     set_0 = [struct.unpack("{}I3f".format(e), f.read(16)) for _ in range(mesh_count)]
@@ -426,8 +434,63 @@ def read_section_1 (f, offset, shps_file, shpp_file):
     with open (shps_file, 'rb') as vt_f:
         with open (shpp_file, 'rb') as idx_f:
             for i in range(mesh_count):
-                meshes.append(read_mesh(mesh_blocks_info[i], vt_f, idx_f))
+                meshes.append(read_mesh(mesh_blocks_info[i], vt_f, idx_f, morph_target_data))
     return(meshes, bone_palette_ids, mesh_blocks_info)
+
+def read_morph_run (offset, vt_f):
+    vt_f.seek(offset)
+    unk = struct.unpack("{}3I".format(e), vt_f.read(12))
+    size, = struct.unpack("{}H2x".format(e), vt_f.read(4))
+    dense_morph_block = bytearray()
+    while True:
+        skip, count = struct.unpack("{}2I".format(e), vt_f.read(8))
+        dense_morph_block.extend(b'\x00' * 12 * skip)
+        if count > 0:
+            dense_morph_block.extend(vt_f.read(12 * count))
+        else:
+            break
+    return (unk, dense_morph_block)
+
+#Morph Targets, offset should be toc[1]. 
+def read_section_2 (f, offset, shps_file):
+    def decode_target_flag (flag):
+        return({'type': flag & 0xFFFFFFFF, 'target': flag >> 32 & 0xFFFFFF, 'category': flag >> 56})
+    f.seek(offset)
+    counts = struct.unpack("{}2H".format(e), f.read(4))
+    f.seek(4,1) # Padding?
+    targets = struct.unpack("{}{}Q".format(e, counts[1]), f.read(8 * counts[1]))
+    targets_decoded = [decode_target_flag(x) for x in targets]
+    morph_target_data = []
+    for i in range(counts[0]):
+        name = read_string(f, read_offset(f))
+        buffer_offset, id_ = struct.unpack("{}2I".format(e), f.read(8))
+        morph_target_data.append({'name': name, 'offset': buffer_offset, 'id': id_, 'target': targets_decoded[i]})
+    unk_floats = struct.unpack("{}{}f".format(e, counts[0]), f.read(4 * counts[0]))
+    for i in range(counts[0]):
+        morph_target_data[i]['unk_float'] = unk_floats[i]
+    with open (shps_file, 'rb') as vt_f:
+        for i in range(counts[0]):
+            unk, dense_morph_block = read_morph_run(morph_target_data[i]['offset'], vt_f)
+            morph_target_data[i]['unk_morph_data'] = unk
+            morph_target_data[i]['morph_run_binary'] = dense_morph_block
+    return morph_target_data
+
+def make_morphed_meshes (mesh):
+    morphed_meshes = []
+    for i in range(len(mesh['morphs'])):
+        morphed_vb = []
+        for j in range(len(mesh['vb'])):
+            semantic = mesh['fmt']['elements'][j]['SemanticName']
+            if semantic in mesh['morphs'][i]:
+                buffer = []
+                for k in range(len(mesh['vb'][j]['Buffer'])):
+                    buffer.append([mesh['vb'][j]['Buffer'][k][l] + mesh['morphs'][i][semantic][k][l]
+                        for l in range(len(mesh['vb'][j]['Buffer'][k]))])
+                morphed_vb.append({'Buffer': buffer})
+            else:
+                morphed_vb.append(mesh['vb'][j])
+        morphed_meshes.append({'fmt': mesh['fmt'], 'vb': morphed_vb, 'ib': mesh['ib'], 'name': mesh['morphs'][i]['name']})
+    return(morphed_meshes)
 
 #Materials, offset should be toc[2]. 
 def read_section_3 (f, offset):
@@ -703,6 +766,37 @@ def write_gltf(base_name, skel_struct, vgmaps, mesh_blocks_info, meshes, materia
             del(ib_stream)
             primitive["mode"] = 4 #TRIANGLES
             primitive["material"] = mesh_blocks_info[i]['material']
+            morph_weights = []
+            if len(meshes[i]['morphs']) > 0:
+                primitive["targets"] = []
+                for morph in meshes[i]['morphs']:
+                    target = {}
+                    for element in morph:
+                        if element == 'name':
+                            continue
+                        if len(morph[element]) > 0 and element != 'BINORMAL':
+                            delta_block = numpy.array(morph[element], dtype='<f4').tobytes()
+                            target[element] = len(gltf_data['accessors'])
+                            gltf_data['accessors'].append({"bufferView" : len(gltf_data['bufferViews']),
+                                "componentType": 5126,
+                                "count": len(morph[element]),
+                                "type": "VEC3"})
+                            if element == 'POSITION':
+                                gltf_data['accessors'][-1]['max'] =\
+                                    [max([x[0] for x in morph[element]]),
+                                     max([x[1] for x in morph[element]]),
+                                     max([x[2] for x in morph[element]])]
+                                gltf_data['accessors'][-1]['min'] =\
+                                    [min([x[0] for x in morph[element]]),
+                                     min([x[1] for x in morph[element]]),
+                                     min([x[2] for x in morph[element]])]
+                            gltf_data['bufferViews'].append({"buffer": 0,
+                                "byteOffset": len(giant_buffer),
+                                "byteLength": len(delta_block),
+                                "target" : 34962})
+                            giant_buffer += delta_block
+                    primitive["targets"].append(target)
+                    morph_weights.append(0.0)
             primitives.append(primitive)
         if len(primitives) > 0:
             if not meshes[i]['mesh_info']['mesh'] in node_id_to_g_id: # One of the new nodes
@@ -711,6 +805,8 @@ def write_gltf(base_name, skel_struct, vgmaps, mesh_blocks_info, meshes, materia
                 node_id = node_id_to_g_id[meshes[i]['mesh_info']['mesh']]
             gltf_data['nodes'][node_id]['mesh'] = len(gltf_data['meshes'])
             gltf_data['meshes'].append({"primitives": primitives, "name": mesh_node_ids[mesh]})
+            if len(morph_weights) > 0:
+                gltf_data['meshes'][-1]['weights'] = morph_weights
             # Skinning
             if (len(vgmaps[mesh_blocks_info[i]["vgmap"]]) > 0 and skinning_possible == True
                     and all(['JOINTS_0' in p['attributes'] for p in primitives])
@@ -769,7 +865,9 @@ def process_shpb (shpb_file, overwrite = False, write_raw_buffers = False, write
                 input(os.path.basename(shpp_file) + " is missing, press Enter to skip processing.")
                 return False
             else:
-                meshes, bone_palette_ids, mesh_blocks_info = read_section_1 (f, toc[0], shps_file, shpp_file)
+                morph_target_data = read_section_2 (f, toc[1], shps_file)
+                meshes, bone_palette_ids, mesh_blocks_info = read_section_1 (f, toc[0],
+                    shps_file, shpp_file, morph_target_data)
             material_struct = read_section_3 (f, toc[2])
             # Find and incorporate an external skeleton
             skel_struct = read_skel_file(find_skeleton(bone_palette_ids))
@@ -795,6 +893,17 @@ def process_shpb (shpb_file, overwrite = False, write_raw_buffers = False, write
                         write_ib(meshes[i]['ib'], '{0}/{1}.ib'.format(base_name, filename), meshes[i]['fmt'], '<')
                         write_vb(meshes[i]['vb'], '{0}/{1}.vb'.format(base_name, filename), meshes[i]['fmt'], '<')
                         open('{0}/{1}.vgmap'.format(base_name, filename), 'wb').write(json.dumps(vgmap,indent=4).encode())
+                        if len(meshes[i]['morphs']) > 0:
+                            morphed_meshes = make_morphed_meshes(meshes[i])
+                            for j in range(len(morphed_meshes)):
+                                filename = '{0:02d}_{1}_morphed_{2:02d}'.format(i, mesh_blocks_info[i]['name'], j)
+                                write_fmt(morphed_meshes[j]['fmt'], '{0}/{1}_{2}.fmt'.format(base_name, filename,
+                                    morphed_meshes[j]['name']))
+                                write_ib(morphed_meshes[j]['ib'], '{0}/{1}_{2}.ib'.format(base_name, filename,
+                                    morphed_meshes[j]['name']), meshes[i]['fmt'], '<')
+                                write_vb(morphed_meshes[j]['vb'], '{0}/{1}_{2}.vb'.format(base_name, filename,
+                                    morphed_meshes[j]['name']), meshes[i]['fmt'], '<')
+                                open('{0}/{1}.vgmap'.format(base_name, filename), 'wb').write(json.dumps(vgmap,indent=4).encode())
                     mesh_struct = [{y:x[y] for y in x if not any(
                         ['offset' in y, 'num' in y])} for x in mesh_blocks_info]
                     for i in range(len(mesh_struct)):
@@ -802,7 +911,7 @@ def process_shpb (shpb_file, overwrite = False, write_raw_buffers = False, write
                     mesh_struct = [{'id_referenceonly': i, **mesh_struct[i]} for i in range(len(mesh_struct))]
                     write_struct_to_json(mesh_struct, base_name + '/mesh_info')
                     write_struct_to_json(material_struct, base_name + '/material_info')
-                    #write_struct_to_json(skel_struct, base_name + '/skeleton_info')
+                    write_struct_to_json(skel_struct, base_name + '/skeleton_info')
     return True
 
 def process_shpb_combined (shpb_files, overwrite = False, write_binary_gltf = True):
@@ -825,7 +934,9 @@ def process_shpb_combined (shpb_files, overwrite = False, write_binary_gltf = Tr
                     input(os.path.basename(shpp_file) + " is missing, press Enter to skip processing.")
                     continue
                 else:
-                    meshes_i, bone_palette_ids_i, mesh_blocks_info_i = read_section_1 (f, toc[0], shps_file, shpp_file)
+                    morph_target_data_i = read_section_2 (f, toc[1], shps_file)
+                    meshes_i, bone_palette_ids_i, mesh_blocks_info_i = read_section_1 (f, toc[0],
+                        shps_file, shpp_file, morph_target_data_i)
                 material_struct_i = read_section_3 (f, toc[2])
                 for i in range(len(mesh_blocks_info_i)):
                     mesh_blocks_info_i[i]['material'] = mesh_blocks_info_i[i]['material'] + len(material_struct)
