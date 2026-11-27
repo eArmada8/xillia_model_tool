@@ -325,7 +325,7 @@ def read_mesh (mesh_info, vt_f, idx_f):
         uv_offsets.append(gpu_stride)
         gpu_stride += 8 # UVs
     # Read vertex data
-    positions, normals, tangents, binormals, blend_idx, weights, morphs = [], [], [], [], [], [], []
+    positions, normals, tangents, binormals, blend_idx, weights = [], [], [], [], [], []
     vt_f.seek(vt_start_offset)
     if flags & 0x30:
         unk0, count, unk2 = struct.unpack("{}3I".format(e), vt_f.read(12))
@@ -392,7 +392,7 @@ def read_mesh (mesh_info, vt_f, idx_f):
     if flags & 0x10:
         vb.append({'Buffer': weights})
         vb.append({'Buffer': blend_idx})
-    mesh = {'fmt': fmt, 'vb': vb, 'ib': ib, 'morphs': morphs}
+    mesh = {'fmt': fmt, 'vb': vb, 'ib': ib, 'mesh_info': mesh_info}
     if flags & 0x80:
         expected_binormals = numpy.cross(normals, tangents)
         w = numpy.where(numpy.einsum('ij,ij->i', expected_binormals, binormals) >= 0.0, 1.0, -1.0)
@@ -598,19 +598,21 @@ def write_gltf(base_name, skel_struct, vgmaps, mesh_blocks_info, meshes, materia
         for texture in missing_textures:
             print("{}".format(texture))
     # Nodes
+    node_id_to_g_id = {}
     for i in range(len(skel_struct)):
         g_node = {'children': skel_struct[i]['children'], 'name': skel_struct[i]['name'], 'matrix': skel_struct[i]['matrix']}
         gltf_data['nodes'].append(g_node)
+        node_id_to_g_id[skel_struct[i]['id']] = i
     for i in range(len(gltf_data['nodes'])):
         if len(gltf_data['nodes'][i]['children']) == 0 and i > 0:
             del(gltf_data['nodes'][i]['children'])
     if len(gltf_data['nodes']) == 0:
         gltf_data['nodes'].append({'children': [], 'name': 'root'})
-    # Mesh nodes will be attached to the first node since in the original model, they don't really have a home
+    # World-space meshes will be attached to the first node as they don't have a home in the original model
     node_id_list = [x['id'] for x in skel_struct]
     for i in range(len(mesh_blocks_info)):
         mesh_blocks_info[i]['mesh_v'] = '{0}_{1:02d}'.format(mesh_blocks_info[i]['mesh'], mesh_blocks_info[i]['vgmap'])
-    mesh_node_ids = {x['mesh_v']:x['name'] for x in mesh_blocks_info}
+    mesh_node_ids = {x['mesh'] if x['mesh'] in node_id_to_g_id else x['mesh_v']:x['name'] for x in mesh_blocks_info}
     if not 'children' in gltf_data['nodes'][0]:
         gltf_data['nodes'][0]['children'] = []
     for mesh_node_id in mesh_node_ids:
@@ -618,8 +620,10 @@ def write_gltf(base_name, skel_struct, vgmaps, mesh_blocks_info, meshes, materia
             g_node = {'name': mesh_node_ids[mesh_node_id]}
             gltf_data['nodes'][0]['children'].append(len(gltf_data['nodes']))
             gltf_data['nodes'].append(g_node)
-    mesh_block_tree = {x:[i for i in range(len(mesh_blocks_info)) if mesh_blocks_info[i]['mesh_v'] == x] for x in mesh_node_ids}
+    mesh_block_tree = {x:[i for i in range(len(mesh_blocks_info))
+        if mesh_blocks_info[i]['mesh_v'] == x or mesh_blocks_info[i]['mesh'] == x] for x in mesh_node_ids}
     node_list = [x['name'] for x in gltf_data['nodes']]
+    node_id_to_name = {x['id']:x['name'] for x in skel_struct}
     # Skin matrices
     skinning_possible = True
     try:
@@ -701,15 +705,16 @@ def write_gltf(base_name, skel_struct, vgmaps, mesh_blocks_info, meshes, materia
             primitive["material"] = mesh_blocks_info[i]['material']
             primitives.append(primitive)
         if len(primitives) > 0:
-            if mesh_node_ids[mesh] in node_list: # One of the new nodes
+            if not meshes[i]['mesh_info']['mesh'] in node_id_to_g_id: # One of the new nodes
                 node_id = node_list.index(mesh_node_ids[mesh])
-            else: # One of the pre-assigned nodes
-                node_id = node_id_list.index(mesh_blocks_info[i]["mesh_v"])
+            else: # One of the pre-assigned nodes (e.g. non-world-space mesh)
+                node_id = node_id_to_g_id[meshes[i]['mesh_info']['mesh']]
             gltf_data['nodes'][node_id]['mesh'] = len(gltf_data['meshes'])
             gltf_data['meshes'].append({"primitives": primitives, "name": mesh_node_ids[mesh]})
             # Skinning
             if (len(vgmaps[mesh_blocks_info[i]["vgmap"]]) > 0 and skinning_possible == True
-                    and all(['JOINTS_0' in p['attributes'] for p in primitives])):
+                    and all(['JOINTS_0' in p['attributes'] for p in primitives])
+                    and (meshes[i]['mesh_info']['flags'] & 0x40)):
                 gltf_data['nodes'][node_id]['skin'] = len(gltf_data['skins'])
                 gltf_data['skins'].append({"inverseBindMatrices": len(gltf_data['accessors']),\
                     "joints": [node_list.index(x) for x in vgmaps[mesh_blocks_info[i]["vgmap"]]]})
