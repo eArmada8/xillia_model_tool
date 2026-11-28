@@ -630,35 +630,6 @@ def flip_mesh_handedness_for_gltf (submesh):
                 for i, x in enumerate(vec)] for vec in submesh['morphs'][i][semantic]]
     return(submesh)
 
-def convert_matrix_to_trs (matrix):
-    scale = [numpy.linalg.norm(matrix[0:3]), numpy.linalg.norm(matrix[4:7]),\
-        numpy.linalg.norm(matrix[8:11])]
-    r_mtx = numpy.array([(matrix[0:3]/scale[0]).tolist(),\
-        (matrix[4:7]/scale[1]).tolist(),\
-        (matrix[8:11]/scale[2]).tolist()]) # Row-major
-    # Enforce orthogonality of rotation matrix, Premelani W and Bizard P "Direction Cosine Matrix IMU: Theory" Diy Drone: Usa 1 (2009).
-    if (error := numpy.dot(r_mtx[0],r_mtx[1])) != 0.0:
-        vectors = [r_mtx[0]-(error/2)*r_mtx[1], r_mtx[1]-(error/2)*r_mtx[0]]
-        vectors.append(numpy.cross(vectors[0], vectors[1]))
-        r_mtx = numpy.array([x/numpy.linalg.norm(x) for x in vectors])
-    # Adapted from Day M. "Converting a Rotation Matrix to a Quaternion." Insomniac Games (13 Jan 2015)
-    if (r_mtx[2][2] < 0):
-        if (r_mtx[0][0] > r_mtx[1][1]):
-            t = 1 + r_mtx[0][0] - r_mtx[1][1] - r_mtx[2][2]
-            q = numpy.array([t, r_mtx[0][1]+r_mtx[1][0], r_mtx[2][0]+r_mtx[0][2], r_mtx[1][2]-r_mtx[2][1]])
-        else:
-            t = 1 - r_mtx[0][0] + r_mtx[1][1] - r_mtx[2][2]
-            q = numpy.array([r_mtx[0][1]+r_mtx[1][0], t, r_mtx[1][2]+r_mtx[2][1], r_mtx[2][0]-r_mtx[0][2]])
-    else:
-        if (r_mtx[0][0] < -r_mtx[1][1]):
-            t = 1 - r_mtx[0][0] - r_mtx[1][1] + r_mtx[2][2]
-            q = numpy.array([r_mtx[2][0]+r_mtx[0][2], r_mtx[1][2]+r_mtx[2][1], t, r_mtx[0][1]-r_mtx[1][0]])
-        else:
-            t = 1 + r_mtx[0][0] + r_mtx[1][1] + r_mtx[2][2]
-            q = numpy.array([r_mtx[1][2]-r_mtx[2][1], r_mtx[2][0]-r_mtx[0][2], r_mtx[0][1]-r_mtx[1][0], t])
-    q *= 0.5 / math.sqrt(t) #xyzw
-    return(matrix[12:15], q.tolist(), scale) #TRS
-
 def flip_node_handedness_for_gltf (node):
     # Grab the original transform
     if 'matrix' in node:
