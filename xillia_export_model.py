@@ -662,7 +662,8 @@ def convert_matrix_to_trs (matrix):
 def flip_node_handedness_for_gltf (node):
     # Grab the original transform
     if 'matrix' in node:
-        t, r, s = convert_matrix_to_trs(node['matrix'])
+        node['matrix'] = [-x if i in [2,6,8,9,11,14] else x for i, x in enumerate(node['matrix'])]
+        return(node)
     else:
         t = node.get('translation', [0,0,0])
         r = node.get('rotation', [0,0,0,1])
@@ -795,9 +796,9 @@ def write_gltf(base_name, skel_struct, vgmaps, mesh_blocks_info, meshes, materia
                 if element['SemanticName'] == 'TANGENT' and 'tangent4' in meshes[i]:
                     meshes[i]['vb'][k]['Buffer'] = meshes[i]['tangent4']
                     element['Format'] = 'R32G32B32A32_FLOAT'
+            meshes[i] = fix_strides(meshes[i])
             if flip_model_handedness_for_gltf == True:
                 meshes[i] = flip_mesh_handedness_for_gltf (meshes[i])
-            meshes[i] = fix_strides(meshes[i])
             gltf_fmt = convert_fmt_for_gltf(meshes[i]['fmt'])
             vb_stream = io.BytesIO()
             write_vb_stream(meshes[i]['vb'], vb_stream, gltf_fmt, e='<', interleave = False)
