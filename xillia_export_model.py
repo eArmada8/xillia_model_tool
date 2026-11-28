@@ -12,16 +12,20 @@
 # GitHub eArmada8/xillia_model_tool
 
 try:
-    import struct, json, numpy, copy, io, glob, os, sys
+    import struct, json, math, numpy, copy, io, glob, os, sys
     from lib_fmtibvb import *
 except ModuleNotFoundError as e:
     print("Python module missing! {}".format(e.msg))
     input("Press Enter to abort.")
     raise
 
-# Configuration variable
+# Configuration variables:
+
 # True to enable combining models (requires a compatible skeleton, no commandline arguments)
 combine_models_into_single_gltf = True
+
+# Convert the model from left-handed to right-handed (from Tales space to glTF space)
+flip_model_handedness_for_gltf = True
 
 # Global variable, do not edit
 e = '<'
@@ -606,6 +610,83 @@ def convert_fmt_for_gltf(fmt):
     new_fmt['stride'] = stride
     return(new_fmt)
 
+def flip_mesh_handedness_for_gltf (submesh):
+    # Technically binormals aren't used but in case glTF ever changes
+    to_flip = ['POSITION', 'NORMAL', 'TANGENT', 'BINORMAL']
+    for i in range(len(submesh['vb'])):
+        semantic = submesh['fmt']['elements'][i]['SemanticName']
+        if semantic in to_flip:
+            submesh['vb'][i]['Buffer'] = [[-x if (i == 2 or (i == 3 and semantic == 'TANGENT')) else x
+                for i, x in enumerate(vec)] for vec in submesh['vb'][i]['Buffer']]
+    # Reverse the unwinding order of the triangles
+    if len(submesh['ib']) > 0 and isinstance(submesh['ib'][0], list):
+        submesh['ib'] = [[x[2], x[1], x[0]] for x in submesh['ib']]
+    else:
+        submesh['ib'].reverse()
+    # Flip morph targets
+    for i in range(len(submesh['morphs'])):
+        for semantic in [x for x in to_flip if x in submesh['morphs'][i]]:
+            submesh['morphs'][i][semantic] = [[-x if i == 2 else x
+                for i, x in enumerate(vec)] for vec in submesh['morphs'][i][semantic]]
+    return(submesh)
+
+def convert_matrix_to_trs (matrix):
+    scale = [numpy.linalg.norm(matrix[0:3]), numpy.linalg.norm(matrix[4:7]),\
+        numpy.linalg.norm(matrix[8:11])]
+    r_mtx = numpy.array([(matrix[0:3]/scale[0]).tolist(),\
+        (matrix[4:7]/scale[1]).tolist(),\
+        (matrix[8:11]/scale[2]).tolist()]) # Row-major
+    # Enforce orthogonality of rotation matrix, Premelani W and Bizard P "Direction Cosine Matrix IMU: Theory" Diy Drone: Usa 1 (2009).
+    if (error := numpy.dot(r_mtx[0],r_mtx[1])) != 0.0:
+        vectors = [r_mtx[0]-(error/2)*r_mtx[1], r_mtx[1]-(error/2)*r_mtx[0]]
+        vectors.append(numpy.cross(vectors[0], vectors[1]))
+        r_mtx = numpy.array([x/numpy.linalg.norm(x) for x in vectors])
+    # Adapted from Day M. "Converting a Rotation Matrix to a Quaternion." Insomniac Games (13 Jan 2015)
+    if (r_mtx[2][2] < 0):
+        if (r_mtx[0][0] > r_mtx[1][1]):
+            t = 1 + r_mtx[0][0] - r_mtx[1][1] - r_mtx[2][2]
+            q = numpy.array([t, r_mtx[0][1]+r_mtx[1][0], r_mtx[2][0]+r_mtx[0][2], r_mtx[1][2]-r_mtx[2][1]])
+        else:
+            t = 1 - r_mtx[0][0] + r_mtx[1][1] - r_mtx[2][2]
+            q = numpy.array([r_mtx[0][1]+r_mtx[1][0], t, r_mtx[1][2]+r_mtx[2][1], r_mtx[2][0]-r_mtx[0][2]])
+    else:
+        if (r_mtx[0][0] < -r_mtx[1][1]):
+            t = 1 - r_mtx[0][0] - r_mtx[1][1] + r_mtx[2][2]
+            q = numpy.array([r_mtx[2][0]+r_mtx[0][2], r_mtx[1][2]+r_mtx[2][1], t, r_mtx[0][1]-r_mtx[1][0]])
+        else:
+            t = 1 + r_mtx[0][0] + r_mtx[1][1] + r_mtx[2][2]
+            q = numpy.array([r_mtx[1][2]-r_mtx[2][1], r_mtx[2][0]-r_mtx[0][2], r_mtx[0][1]-r_mtx[1][0], t])
+    q *= 0.5 / math.sqrt(t) #xyzw
+    return(matrix[12:15], q.tolist(), scale) #TRS
+
+def flip_node_handedness_for_gltf (node):
+    # Grab the original transform
+    if 'matrix' in node:
+        t, r, s = convert_matrix_to_trs(node['matrix'])
+    else:
+        t = node.get('translation', [0,0,0])
+        r = node.get('rotation', [0,0,0,1])
+        s = node.get('scale', [1,1,1])
+    # Remove the original transform
+    node.pop('matrix', None)
+    node.pop('translation', None)
+    node.pop('rotation', None)
+    node.pop('scale', None)
+    # Change handedness by flipping Z
+    t = [t[0], t[1], -t[2]]
+    r = [-r[0], -r[1], r[2], r[3]] #xyzw
+    # Write back the new transform
+    if not t == [0,0,0]:
+        node['translation'] = t
+    if not r == [0,0,0,1]:
+        node['rotation'] = r #xyzw
+    if not s == [1,1,1]:
+        node['scale'] = s
+    return(node)
+
+def flip_ibm_handedness_for_gltf (ibm):
+    return([-x if i in [2,6,8,9,11,14] else x for i, x in enumerate(ibm)])
+
 def fix_strides(submesh):
     offset = 0
     for i in range(len(submesh['vb'])):
@@ -664,6 +745,8 @@ def write_gltf(base_name, skel_struct, vgmaps, mesh_blocks_info, meshes, materia
     node_id_to_g_id = {}
     for i in range(len(skel_struct)):
         g_node = {'children': skel_struct[i]['children'], 'name': skel_struct[i]['name'], 'matrix': skel_struct[i]['matrix']}
+        if flip_model_handedness_for_gltf == True:
+            g_node = flip_node_handedness_for_gltf(g_node)
         gltf_data['nodes'].append(g_node)
         node_id_to_g_id[skel_struct[i]['id']] = i
     for i in range(len(gltf_data['nodes'])):
@@ -695,6 +778,8 @@ def write_gltf(base_name, skel_struct, vgmaps, mesh_blocks_info, meshes, materia
         for vgmap in vgmaps:
             vgmap_nodes = [node_list.index(x) for x in list(vgmap.keys())]
             ibms = [skel_struct[j]['inv_matrix'] for j in vgmap_nodes]
+            if flip_model_handedness_for_gltf == True:
+                ibms = [flip_ibm_handedness_for_gltf(x) for x in ibms]
             inv_mtx_buffer = b''.join([struct.pack("<16f", *x) for x in ibms])
             ibms_struct.append(ibms)
             inv_mtx_buffers.append(inv_mtx_buffer)
@@ -710,6 +795,8 @@ def write_gltf(base_name, skel_struct, vgmaps, mesh_blocks_info, meshes, materia
                 if element['SemanticName'] == 'TANGENT' and 'tangent4' in meshes[i]:
                     meshes[i]['vb'][k]['Buffer'] = meshes[i]['tangent4']
                     element['Format'] = 'R32G32B32A32_FLOAT'
+            if flip_model_handedness_for_gltf == True:
+                meshes[i] = flip_mesh_handedness_for_gltf (meshes[i])
             meshes[i] = fix_strides(meshes[i])
             gltf_fmt = convert_fmt_for_gltf(meshes[i]['fmt'])
             vb_stream = io.BytesIO()
@@ -878,8 +965,6 @@ def process_shpb (shpb_file, overwrite = False, write_raw_buffers = False, write
             for i in range(len(mesh_blocks_info)):
                 mesh_blocks_info[i]['vgmap'] = 0
             vgmaps = [vgmap]
-            write_gltf(base_name, skel_struct, vgmaps, mesh_blocks_info, meshes, material_struct,\
-                overwrite = overwrite, write_binary_gltf = write_binary_gltf)
             if write_raw_buffers == True:
                 if os.path.exists(base_name) and (os.path.isdir(base_name)) and (overwrite == False):
                     if str(input(base_name + " folder exists! Overwrite? (y/N) ")).lower()[0:1] == 'y':
@@ -912,6 +997,8 @@ def process_shpb (shpb_file, overwrite = False, write_raw_buffers = False, write
                     write_struct_to_json(mesh_struct, base_name + '/mesh_info')
                     write_struct_to_json(material_struct, base_name + '/material_info')
                     write_struct_to_json(skel_struct, base_name + '/skeleton_info')
+            write_gltf(base_name, skel_struct, vgmaps, mesh_blocks_info, meshes, material_struct,\
+                overwrite = overwrite, write_binary_gltf = write_binary_gltf)
     return True
 
 def process_shpb_combined (shpb_files, overwrite = False, write_binary_gltf = True):
